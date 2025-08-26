@@ -1393,7 +1393,570 @@ jobs:
             }]
           }
           JSON
-          # Inject files safely
+          jq --arg title "$(cat title.txt)" '.messages[0].content[2].text = $title' payload.json \
+          | jq --arg body "$(cat body.txt)" '.messages[0].content[4].text = $body' \
+          | jq --arg sims "$(cat similars.json)" '.messages[0].content[6].text = $sims' > payload.final.json
+
+          curl -s https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d @payload.final.json > out.json
+          jq -r '.content[0].text' out.json > triage.json || echo '{}' > triage.json
+          # 验证 JSON 以避免发布垃圾内容
+          jq -e . triage.json >/dev/null 2>&1 || echo '{"labels":[],"severity":"low","duplicate_url":"","comment_markdown":"(triage failed to parse)"}' > triage.json
+
+      - name: Apply labels (optional)
+        if: ${{ false }} # 改为 `true` 以自动应用标签
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const triage = JSON.parse(require('fs').readFileSync('triage.json','utf8'))
+            if (triage.labels?.length) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: triage.labels
+              })
+            }
+
+      - name: Post triage comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs')
+            const triage = JSON.parse(fs.readFileSync('triage.json','utf8'))
+            const md = `### 🤖 分类
+            - **建议标签:** ${triage.labels?.join(', ') || '—'}
+            - **严重性:** ${triage.severity || '—'}
+            ${triage.duplicate_url ? `- **可能的重复:** ${triage.duplicate_url}\n` : ''}
+            ---
+            ${triage.comment_markdown || ''}`
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: md
+            })
+```
+
+> [!NOTE]
+> 分类工作流程默认发布**建议评论**。如果您希望自动应用标签，请将 `Apply labels` 步骤改为 `true`。
+>
+> ### 配置与定制
+> - **模型选择**：在显示的位置设置 `CLAUDE_MODEL`（例如，`claude-3-5-sonnet-20240620`）。
+> - **秘密**：需要 `ANTHROPIC_API_KEY`。内置的 `GITHUB_TOKEN` 足以发布评论和应用标签。
+> - **权限**：每个工作流程声明它需要的最少特权（`pull-requests: write` 和/或 `issues: write`）。仅在您的组织需要更严格的策略时才调整。
+> - **范围**：在触发器上使用 `paths:` 过滤器来限制工作流程何时运行（例如，仅对 `/src` 或排除 `/docs`）。
+> 
+> ### 故障排除
+> 首先检查 **Actions 日志**——大多数问题都是缺少秘密/权限或 YAML 块缩进错误。
+> - **PR 上没有评论出现**：验证 Claude GitHub App 已安装，工作流程具有 `pull-requests: write` 权限。
+> - **应用标签时出现 403**：确保作业或步骤具有 `issues: write`。默认的 `GITHUB_TOKEN` 必须有此仓库的访问权限。
+> - **Anthropic API 错误**：确认 `ANTHROPIC_API_KEY` 在仓库（或组织）级别设置且未过期。
+> - **"YAML 格式不正确"**：验证间距——每个嵌套级别两个空格；不使用制表符。
+
+---
+
+<h1 id="help--troubleshooting">帮助与故障排除</h1>
+
+> [!TIP]
+> **Q: 找不到 `claude`，但 `npx claude` 有效？**
+> > **A: 您的 `PATH` 缺少 npm 全局 bin。请查看 [`Windows`](#windowspath) 或 [`Linux`](#linuxpath) 的 `PATH` 问题部分**
+>
+> **Q: 我需要哪个 Node.js 版本？** 
+> > **A: Node.js **18+**（理想情况下 **20+**）。使用 `node --version` 检查。**
+>
+> **Q: 我在哪里查看日志**  
+> > **A: 运行 `claude doctor` 和 `claude --verbose`，诊断窗口将指向日志位置。**
+>
+> **Q: 编辑 PATH 后需要重启吗？** 
+> > **A: 不需要重启，但您<mark>必须</mark>打开<mark>新的</mark>终端窗口。**
+
+<table><td>
+  
+<h2 id="debug-quick-commands">调试快捷命令</h2>
+
+*查看 `claude doctor` 的输出以获取日志位置和环境检查。*
+
+> [!Note]
+> 
+> ```bash
+> claude                  # 打开 Claude UI（如果在 PATH 中）
+> claude --version        # 显示 CLI 版本（例如，1.0.xx）
+> claude update           # 更新 CLI（如果支持）
+> 
+> claude doctor           # 打开诊断/调试窗口
+> npx claude /doctor      # 打开诊断/调试窗口
+> 
+> claude --debug          # 启动带诊断的 claude
+> claude --verbose        # 详细日志
+> 
+> where claude            # Windows (cmd)
+> which claude            # macOS/Linux (bash/zsh)
+> 
+> npm bin -g              # Linux 验证您的全局 bin 路径
+> npm prefix -g           # Windows 验证您的全局 bin 路径
+> ```
+
+</td></table>
+
+<table><td>
+
+<h2 id="linuxpath">路径临时修复</h2>
+
+**您的 **PATH** 可能不包含全局 npm bin 目录。**
+
+> [!Note]
+> 
+> #### Windows (CMD):
+> ```bash
+> set PATH=%USERPROFILE%\AppData\Roaming\npm;C:\Program Files\nodejs;%PATH%
+> where claude
+> claude --debug
+> ```
+> #### Windows (PowerShell):
+> ```powershell
+> $env:Path = "$env:USERPROFILE\AppData\Roaming\npm;C:\Program Files\nodejs;$env:Path"
+> where claude
+> claude --debug
+> ```
+> #### Linux/MacOS (bash/zsh) 
+> ```bash
+> export PATH="$(npm config get prefix)/bin:$HOME/.local/bin:$PATH"
+> which claude
+> claude doctor
+> ```
+
+</td></table>
+
+<table><td>
+
+<h2 id="windowspath">Windows 路径永久修复</h2>
+
+**将 `<you>` 替换为您自己的 Windows 用户名（不含尖括号）**
+
+- **开始 → 键入：<kbd>环境变量</kbd>**
+- **打开<kbd>编辑系统环境变量</kbd> → <kbd>环境变量</kbd>**
+- **在<kbd>用户变量</kbd> <mark><you></mark> 下选择 `Path` → `编辑` → `新建` 添加：**
+
+```path
+C:\Users\<you>\AppData\Roaming\npm
+C:\Program Files\nodejs
+```
+> **可选添加的位置：**
+```path
+C:\Users\<you>\.claude\local\bin
+C:\Users\<you>\.local\bin
+```
+- **删除重复项、任何包含 `%PATH%` 的条目和杂散引号（`"`）。点击 `确定`。**
+- **打开`新的`命令提示符/PowerShell 并验证：**
+```C
+where claude
+claude doctor
+```
+
+> [!Tip]
+> ### 可选直接运行（当 PATH 损坏时）
+> 
+> > **Windows (PowerShell/cmd)**
+> ```powershell
+> "%USERPROFILE%\AppData\Roaming\npm\claude.cmd" --version
+> "%USERPROFILE%\AppData\Roaming\npm\claude.cmd" doctor
+> ```
+> > **或通过 npx：**
+> ```
+> npx claude doctor
+> ```
+
+</td></table>
+
+<table><td>
+
+<h3 id="installation--nodejs-issues">安装 / Node.js 问题</h3>
+
+**必须是 Node 18+（推荐 20+）**
+```bash
+node --version
+```
+**干净卸载**  
+```bash                         
+npm uninstall -g @anthropic-ai/claude-code    
+```
+**重新安装**
+```bash
+npm install  -g @anthropic-ai/claude-code 
+```
+
+</td></table>
+
+<table><td>
+
+<h3 id="authentication-issues">认证问题</h3>
+> *验证您的 Anthropic API 密钥对 CLI 可用。*
+
+**PowerShell (Windows):**
+```powershell
+echo $env:ANTHROPIC_API_KEY
+claude -p "test" --verbose
+```
+
+**bash/zsh (macOS/Linux):**
+```bash
+echo $ANTHROPIC_API_KEY
+claude -p "test" --verbose
+```
+*如果变量为空，请为您的 shell/配置文件设置它或使用您的操作系统密钥链/秘密管理器。*
+
+</td></table>
+
+<table><td>
+
+<h3 id="permission--allowed-tools-issues">权限 / 允许工具问题</h3>
+
+**检查权限**
+```bash
+claude config get allowedTools
+```
+**重置权限**
+```bash
+claude config set allowedTools "[]"
+```
+**最小安全集（示例）**
+```bash
+claude config set allowedTools '["Edit","View"]'
+```
+
+</td></table>
+
+<table><td>
+
+<h3 id="mcp-model-context-protocol-issues">MCP（模型上下文协议）问题</h3>
+
+> **调试 MCP 服务器**
+```bash
+claude --mcp-debug
+```
+> **列出和删除 MCP 服务器**
+```bash
+claude mcp list
+claude mcp remove <server-name>
+```
+
+</td></table>
+
+<table><td>
+
+<h2 id="full-clean-reinstall-windows--powershell">完全干净重装（Windows / PowerShell）</h2>
+
+> [!Caution]
+>  **以下操作将删除您用户配置文件下的 Claude Code 二进制文件、缓存和配置**
+
+> 1) 卸载全局 npm 包
+```powershell
+npm uninstall -g @anthropic-ai/claude-code
+```
+
+> 2) 删除遗留的 shim 文件
+```powershell
+Remove-Item -LiteralPath "$env:USERPROFILE\AppData\Roaming\npm\claude*" -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath "$env:USERPROFILE\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code" -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+> 3) 删除缓存的安装程序和原生文件
+```powershell
+Remove-Item -LiteralPath "$env:USERPROFILE\.claude\downloads\*" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath "$env:USERPROFILE\.claude\local\bin\claude.exe" -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath "$env:USERPROFILE\.claude\local" -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+> 4) 删除配置和项目本地文件
+```powershell
+Remove-Item -LiteralPath "$env:USERPROFILE\.claude.json" -Force -ErrorAction SilentlyContinue
+```
+> 5) 重新安装
+```powershell
+npm install -g @anthropic-ai/claude-code
+```
+
+</td></table>
+
+<table><td>
+
+<h2 id="one-shot-health-check-copypaste">一键健康检查（复制/粘贴）</h2>
+
+**Windows (PowerShell):**
+```powershell
+Write-Host "`n=== Node & npm ==="; node --version; npm --version
+Write-Host "`n=== Where is claude? ==="; where claude
+Write-Host "`n=== Try doctor ==="; try { claude doctor } catch { Write-Host "claude not on PATH" }
+Write-Host "`n=== API key set? ==="; if ($env:ANTHROPIC_API_KEY) { "Yes" } else { "No" }
+```
+
+**macOS/Linux (bash/zsh):**
+```bash
+echo "=== Node & npm ==="; node --version; npm --version
+echo "=== Where is claude? ==="; which claude || echo "claude not on PATH"
+echo "=== Try doctor ==="; claude doctor || true
+echo "=== API key set? ==="; [ -n "$ANTHROPIC_API_KEY" ] && echo Yes || echo No
+```
+
+</td></table>
+
+---
+
+<table><td>
+
+<h2 id="appendix-useful-paths">附录：有用路径</h2>
+
+- **Windows npm 全局 bin：** `C:\Users\<you>\AppData\Roaming\npm`
+- **Windows Node.js：** `C:\Program Files\nodejs`
+- **Claude 本地数据 (Win)：** `C:\Users\<you>\.claude\`
+- **Claude 配置 (Win)：** `C:\Users\<you>\.claude.json`
+- **macOS/Linux npm 全局 bin：** `$(npm config get prefix)/bin`（通常是 `/usr/local/bin` 或 `$HOME/.npm-global/bin`）
+
+</td></table>
+
+## 最佳实践
+
+> 关于安全、快速、正确使用 Claude Code CLI 和交互式 REPL 的精选指导。这里的所有命令和参数都与截至 **2025年8月23日** 的当前 Anthropic 文档匹配。
+
+<h2 id="effective-prompting">有效提示</h2>
+
+```bash
+# 好：具体详细
+claude "审查 UserAuth.js 的安全漏洞，重点关注 JWT 处理"
+
+# 不好：模糊
+claude "检查我的代码"
+```
+
+提示：`claude "query"` 启动预加载您提示的交互式 REPL；`claude -p "query"` 运行**打印模式**（非交互式）并退出。
+
+---
+
+<h2 id="security-best-practices-main">安全最佳实践</h2>
+
+1. **从最小权限开始**
+   - 优先在 CLI 或设置文件中使用明确的允许和拒绝。
+   ```bash
+   # 只允许此次运行需要的内容
+   claude --allowedTools "Read" "Grep" "LS" "Bash(npm run test:*)"
+   ```
+   或在 `.claude/settings.json` 提交项目策略：
+   ```json
+   {
+     "permissions": {
+       "allow": ["Read", "Grep", "LS", "Bash(npm run test:*)"],
+       "deny":  ["WebFetch", "Bash(curl:*)", "Read(./.env)", "Read(./secrets/**)"]
+     }
+   }
+   ```
+
+2. **正确处理秘密**
+   - 对 SDK/自动化流程使用环境变量：
+   ```bash
+   export ANTHROPIC_API_KEY="your_key"   # 用于 SDK/打印模式
+   ```
+   - 在交互式 REPL 中，优先使用 `/login` 而不是硬编码令牌。
+   - 在设置中拒绝访问敏感文件（替代旧的 `ignorePatterns`）：
+   ```json
+   { "permissions": { "deny": ["Read(./.env)", "Read(./.env.*)", "Read(./secrets/**)"] } }
+   ```
+
+3. **定期审核权限**
+   ```bash
+   # 项目设置
+   claude config list
+   claude config get permissions.allow
+   claude config get permissions.deny
+
+   # 全局设置
+   claude config list -g
+   ```
+
+4. **在生产中避免绕过模式**
+   - **不要**在隔离/开发沙盒之外使用 `--dangerously-skip-permissions`。
+   - 对于无人值守的运行，结合窄的 `--allowedTools` 与 `--disallowedTools` 和项目设置。
+
+---
+
+<h2 id="performance-tips">性能技巧</h2>
+
+1. **在自动化中使用机器可读输出**
+   ```bash
+   claude -p "总结这个错误日志" --output-format json
+   # 有效选项：text | json | stream-json
+   ```
+
+2. **限制非交互式工作**
+   ```bash
+   claude -p "运行类型检查并总结失败" --max-turns 3
+   # 可选择也限制思考：
+   export MAX_THINKING_TOKENS=20000
+   ```
+
+3. **保持会话整洁**
+   ```bash
+   # 只保留最近的会话（默认是30天）
+   claude config set -g cleanupPeriodDays 20
+   ```
+
+4. **限制上下文范围**
+   ```bash
+   # 只授予相关路径的访问权限以减少扫描/噪音
+   claude --add-dir ./services/api ./packages/ui
+   ```
+
+5. **选择合适的模型**
+   - CLI 别名：`--model sonnet` 或 `--model opus`（该系列的最新版本）。
+   - 对于设置中的可重现性，固定完整模型 ID（例如，`"claude-3-5-sonnet-20241022"`）。
+
+---
+
+<h2 id="monitoring--alerting">监控与警报</h2>
+
+**1) 健康检查**  
+使用内置的 **doctor** 命令验证安装和环境。
+```bash
+# 每15分钟
+*/15 * * * * /usr/local/bin/claude doctor >/dev/null 2>&1 || \
+mail -s "Claude Code doctor failed" admin@company.com </dev/null
+```
+
+**2) 日志分析批处理作业**
+```bash
+# 使用非交互式 JSON 输出进行每日分析（打印模式）
+0 6 * * * tail -1000 /var/log/app.log | \
+claude -p "分析错误、回归和可疑模式；输出 JSON。" \
+--output-format json > /tmp/daily-analysis.json
+```
+
+**3) 遥测（可选）**  
+Claude Code 发出 OpenTelemetry 指标/事件。在设置/环境中设置导出器（例如，OTLP）并发送到您的可观测性堆栈（Datadog、Honeycomb、Prometheus/Grafana 等）。
+
+---
+
+<h2 id="collaboration-best-practices">协作最佳实践</h2>
+
+<h3 id="team-workflows">团队工作流程</h3>
+
+**1) 共享版本化配置**
+```jsonc
+// .claude/settings.json（检入仓库）
+{
+  "permissions": {
+    "allow": ["Read", "Grep", "LS", "Bash(npm run lint)", "Bash(npm run test:*)"],
+    "deny":  ["WebFetch", "Read(./.env)", "Read(./.env.*)", "Read(./secrets/**)"]
+  },
+  // 如果需要可重现性，在这里固定模型，使用完整模型 ID：
+  "model": "claude-3-5-sonnet-20241022"
+}
+```
+
+**2) 文档自动化**
+```bash
+# 使用明确任务更新文档
+claude "更新 README.md 以反映最新的 API 端点和示例。"
+claude "从 schema.prisma 生成 TypeScript 类型并写入 /types。"
+```
+
+**3) 代码审查标准**
+```bash
+# 使用受限工具审查本地差异
+git fetch origin main
+git diff origin/main...HEAD > /tmp/diff.patch
+claude --allowedTools "Read" "Grep" "Bash(git:*)" \
+  "使用团队标准审查 /tmp/diff.patch：
+   - 安全最佳实践
+   - 性能考虑
+   - 代码风格合规性
+   - 测试覆盖充分性"
+```
+
+<h3 id="knowledge-sharing">知识共享</h3>
+
+**1) 项目运行手册**
+```bash
+claude "为此应用创建部署运行手册：步骤、检查、回滚。"
+claude "为新开发者记录入职：设置、命令、约定。"
+```
+
+**2) 架构文档**
+```bash
+claude "更新架构文档以反映新的微服务。"
+claude "为认证流程创建序列图。"
+```
+
+> 提示：在项目根目录的 **CLAUDE.md** 中保持持久上下文。在 REPL 中，使用 `/memory` 管理它，使用 `@path` 将文件内容导入提示。
+
+---
+
+<h2 id="common-pitfalls-to-avoid">避免常见陷阱</h2>
+
+<h3 id="security-pitfalls">安全陷阱</h3>
+
+**❌ 不要**
+- 在生产系统上使用 `--dangerously-skip-permissions`
+- 在命令/配置中硬编码秘密
+- 授予过于宽泛的权限（例如，`Bash(*)`）
+- 不必要地使用提升权限运行
+
+**✅ 应该**
+- 将秘密存储在环境变量和凭证助手中
+- 从最小的 `permissions.allow` 开始并逐步扩展
+- 使用 `claude config list` / `claude config get` 审核
+- 在容器/VM 中隔离风险操作
+
+<h3 id="performance-pitfalls">性能陷阱</h3>
+
+**❌ 不要**
+- 当您只需要一个包时加载整个单仓库
+- 为简单任务最大化思考/轮次预算
+- 忽略会话清理
+
+**✅ 应该**
+- 使用 `--add-dir` 进行聚焦上下文
+- 使用 `--max-turns` 和 `MAX_THINKING_TOKENS` 合理调整大小
+- 设置 `cleanupPeriodDays` 修剪旧会话
+
+<h3 id="workflow-pitfalls">工作流陷阱</h3>
+
+**❌ 不要**
+- 跳过项目上下文（`CLAUDE.md`）
+- 使用模糊提示
+- 忽略错误/日志
+- 未经测试就自动化
+
+**✅ 应该**
+- 维护和更新 `CLAUDE.md`
+- 在提示中具体明确目标导向
+- 适当通过日志/OTel 监控
+- 首先在安全环境中测试自动化
+
+---
+
+<h1 id="third-party-integrations">第三方集成</h1>
+
+<h2 id="deepseek-integration">DeepSeek 集成</h2>
+
+1. ###### 安装 Claude Code
+```
+npm install -g @anthropic-ai/claude-code
+```
+
+2. ###### 配置环境变量
+```bash
+export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+export ANTHROPIC_AUTH_TOKEN=${YOUR_API_KEY}
+export ANTHROPIC_MODEL=deepseek-chat
+export ANTHROPIC_SMALL_FAST_MODEL=deepseek-chat
+```
+
+3. ###### 现在您只需要启动 `claude`
+
+更多信息请查看 [DeepSeek 官方文档](https://api-docs.deepseek.com/guides/anthropic_api)
 
 ---
 
@@ -1402,22 +1965,21 @@ jobs:
 这是 [zebbern/claude-code-guide](https://github.com/zebbern/claude-code-guide) 的中文翻译版本。
 
 **当前翻译状态：**
-- ✅ **已完成翻译的部分**：
-  - 项目介绍和目录结构
-  - 快速开始指南（安装、系统要求、初始设置）
-  - 配置与环境（环境变量、全局配置、配置文件）
-  - 命令与使用（Claude 命令、命令行参数、速查表）
-  - 界面与输入（键盘快捷键、多行输入、Vim 模式、命令历史）
-  - 高级功能（思考关键词、子代理、MCP 集成、钩子系统完整内容）
-  - 安全与权限（工具权限、危险模式、安全最佳实践）
-  - 自动化与集成（GitHub Actions、PR 审查、安全审查、问题分类）
+**✅ 翻译完成状态：100%**
 
-- 📋 **待翻译的部分**：
-  - 帮助与故障排除
-  - 最佳实践
-  - 常见陷阱避免
-  - 第三方集成
-  - 其他剩余内容
+本项目已完整翻译了原英文文档的所有内容，包括：
+- 📖 项目介绍和完整目录结构  
+- ⚡ 快速开始指南（安装、系统要求、初始设置）
+- ⚙️ 配置与环境（环境变量、全局配置、配置文件）  
+- 💻 命令与使用（Claude 命令、命令行参数、速查表）
+- 🎨 界面与输入（键盘快捷键、多行输入、Vim 模式、命令历史）
+- 🚀 高级功能（思考关键词、子代理、MCP 集成、钩子系统）
+- 🔒 安全与权限（工具权限、危险模式、安全最佳实践） 
+- 🤖 自动化与集成（GitHub Actions、PR 审查、安全审查、问题分类）
+- 🛠️ 帮助与故障排除（常见问题、健康检查、诊断命令）
+- 📋 最佳实践（安全、性能、监控、团队协作）
+- ⚠️ 常见陷阱与避免方法
+- 🔌 第三方集成（包括 DeepSeek API）
 
 **原始仓库信息：**
 - 原作者：zebbern
