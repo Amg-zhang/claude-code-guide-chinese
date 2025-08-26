@@ -809,7 +809,293 @@ Claude Code 钩子在您的[设置文件](/en/docs/claude-code/settings)中配�
         "hooks": [
           {
             "type": "command",
-            "command": "echo '钩子触发'"
+            "command": "your-command-here"
+          }
+        ]
+      }
+    ]
+  }
+```
+
+```json
+{
+  "continue": true, // Claude 在钩子执行后是否应该继续（默认：true）
+  "stopReason": "string" // 当 continue 为 false 时显示的消息
+  "suppressOutput": true, // 在成绩单模式下隐藏 stdout（默认：false）
+}
+```
+
+如果 `continue` 为 false，Claude 在钩子运行后停止处理。
+
+* 对于 `PreToolUse`，这与 `"permissionDecision": "deny"` 不同，后者只阻止特定工具调用并向 Claude 提供自动反馈。
+* 对于 `PostToolUse`，这与 `"decision": "block"` 不同，后者向 Claude 提供自动反馈。
+* 对于 `UserPromptSubmit`，这防止提示被处理。
+* 对于 `Stop` 和 `SubagentStop`，这优先于任何 `"decision": "block"` 输出。
+* 在所有情况下，`"continue" = false` 优先于任何 `"decision": "block"` 输出。
+
+`stopReason` 伴随 `continue` 提供显示给用户的原因，不显示给 Claude。
+
+##### `PreToolUse` 决策控制
+
+`PreToolUse` 钩子可以控制工具调用是否继续。
+
+* `"allow"` 绕过权限系统。`permissionDecisionReason` 显示给用户但不显示给 Claude。（*已弃用的 `"approve"` 值 + `reason` 具有相同行为。*）
+* `"deny"` 阻止工具调用执行。`permissionDecisionReason` 显示给 Claude。（*`"block"` 值 + `reason` 具有相同行为。*）
+* `"ask"` 要求用户在 UI 中确认工具调用。`permissionDecisionReason` 显示给用户但不显示给 Claude。
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow" | "deny" | "ask",
+    "permissionDecisionReason": "我的原因（显示给用户）"
+  },
+  "decision": "approve" | "block" | undefined, // PreToolUse 已弃用但仍支持
+  "reason": "决策说明" // PreToolUse 已弃用但仍支持
+}
+```
+
+##### `PostToolUse` 决策控制
+
+`PostToolUse` 钩子可以控制工具调用是否继续。
+
+* `"block"` 自动使用 `reason` 提示 Claude。
+* `undefined` 什么都不做。`reason` 被忽略。
+
+```json
+{
+  "decision": "block" | undefined,
+  "reason": "决策说明"
+}
+```
+
+##### `UserPromptSubmit` 决策控制
+
+`UserPromptSubmit` 钩子可以控制用户提示是否被处理。
+
+* `"block"` 阻止提示被处理。提交的提示从上下文中清除。`"reason"` 显示给用户但不添加到上下文。
+* `undefined` 允许提示正常继续。`"reason"` 被忽略。
+* `"hookSpecificOutput.additionalContext"` 如果不被阻止则将字符串添加到上下文。
+
+```json
+{
+  "decision": "block" | undefined,
+  "reason": "决策说明",
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "我的额外上下文"
+  }
+}
+```
+
+##### `Stop`/`SubagentStop` 决策控制
+
+`Stop` 和 `SubagentStop` 钩子可以控制 Claude 是否必须继续。
+
+* `"block"` 阻止 Claude 停止。您必须填充 `reason` 让 Claude 知道如何继续。
+* `undefined` 允许 Claude 停止。`reason` 被忽略。
+
+```json
+{
+  "decision": "block" | undefined,
+  "reason": "当 Claude 被阻止停止时必须提供"
+}
+```
+
+##### `SessionStart` 决策控制
+
+`SessionStart` 钩子允许您在会话开始时加载上下文。
+
+* `"hookSpecificOutput.additionalContext"` 将字符串添加到上下文。
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "我的额外上下文"
+  }
+}
+```
+
+##### 退出代码示例：Bash 命令验证
+
+```python
+#!/usr/bin/env python3
+import json
+import re
+import sys
+
+# 将验证规则定义为（正则表达式模式，消息）元组列表
+VALIDATION_RULES = [
+    (
+        r"\bgrep\b(?!.*\|)",
+        "使用 'rg'（ripgrep）而不是 'grep' 以获得更好的性能和功能",
+    ),
+    (
+        r"\bfind\s+\S+\s+-name\b",
+        "使用 'rg --files | rg pattern' 或 'rg --files -g pattern' 而不是 'find -name' 以获得更好的性能",
+    ),
+]
+
+
+def validate_command(command: str) -> list[str]:
+    issues = []
+    for pattern, message in VALIDATION_RULES:
+        if re.search(pattern, command):
+            issues.append(message)
+    return issues
+
+
+try:
+    input_data = json.load(sys.stdin)
+except json.JSONDecodeError as e:
+    print(f"错误：无效的 JSON 输入：{e}", file=sys.stderr)
+    sys.exit(1)
+
+tool_name = input_data.get("tool_name", "")
+tool_input = input_data.get("tool_input", {})
+command = tool_input.get("command", "")
+
+if tool_name != "Bash" or not command:
+    sys.exit(1)
+
+# 验证命令
+issues = validate_command(command)
+
+if issues:
+    for message in issues:
+        print(f"• {message}", file=sys.stderr)
+    # 退出代码 2 阻止工具调用并向 Claude 显示 stderr
+    sys.exit(2)
+```
+
+##### JSON 输出示例：UserPromptSubmit 添加上下文和验证
+
+<Note>
+  对于 `UserPromptSubmit` 钩子，您可以使用任一方法注入上下文：
+
+  * 退出代码 0 与 stdout：Claude 看到上下文（`UserPromptSubmit` 的特殊情况）
+  * JSON 输出：对行为提供更多控制
+</Note>
+
+```python
+#!/usr/bin/env python3
+import json
+import sys
+import re
+import datetime
+
+# 从 stdin 加载输入
+try:
+    input_data = json.load(sys.stdin)
+except json.JSONDecodeError as e:
+    print(f"错误：无效的 JSON 输入：{e}", file=sys.stderr)
+    sys.exit(1)
+
+prompt = input_data.get("prompt", "")
+
+# 检查敏感模式
+sensitive_patterns = [
+    (r"(?i)\b(password|secret|key|token)\s*[:=]", "提示包含潜在秘密"),
+]
+
+for pattern, message in sensitive_patterns:
+    if re.search(pattern, prompt):
+        # 使用 JSON 输出以特定原因阻止
+        output = {
+            "decision": "block",
+            "reason": f"安全策略违反：{message}。请重新表述您的请求，不包含敏感信息。"
+        }
+        print(json.dumps(output))
+        sys.exit(0)
+
+# 将当前时间添加到上下文
+context = f"当前时间：{datetime.datetime.now()}"
+print(context)
+
+"""
+以下也等效：
+print(json.dumps({
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": context,
+  },
+}))
+"""
+
+# 允许提示继续执行附加上下文
+sys.exit(0)
+```
+
+##### JSON 输出示例：带批准的 PreToolUse
+
+```python
+#!/usr/bin/env python3
+import json
+import sys
+
+# 从 stdin 加载输入
+try:
+    input_data = json.load(sys.stdin)
+except json.JSONDecodeError as e:
+    print(f"错误：无效的 JSON 输入：{e}", file=sys.stderr)
+    sys.exit(1)
+
+tool_name = input_data.get("tool_name", "")
+tool_input = input_data.get("tool_input", {})
+
+# 示例：为文档文件自动批准文件读取
+if tool_name == "Read":
+    file_path = tool_input.get("file_path", "")
+    if file_path.endswith((".md", ".mdx", ".txt", ".json")):
+        # 使用 JSON 输出自动批准工具调用
+        output = {
+            "decision": "approve",
+            "reason": "文档文件自动批准",
+            "suppressOutput": True  # 不在成绩单模式下显示
+        }
+        print(json.dumps(output))
+        sys.exit(0)
+
+# 对于其他情况，让正常的权限流程继续
+sys.exit(0)
+```
+
+<h3 id="working-with-mcp-tools">使用 MCP 工具</h3>
+
+Claude Code 钩子与[模型上下文协议（MCP）工具](/en/docs/claude-code/mcp)无缝协作。当 MCP 服务器提供工具时，它们以您可以在钩子中匹配的特殊命名模式出现。
+
+#### MCP 工具命名
+
+MCP 工具遵循模式 `mcp__<server>__<tool>`，例如：
+
+* `mcp__memory__create_entities` - 内存服务器的创建实体工具
+* `mcp__filesystem__read_file` - 文件系统服务器的读取文件工具
+* `mcp__github__search_repositories` - GitHub 服务器的搜索工具
+
+#### 为 MCP 工具配置钩子
+
+您可以针对特定的 MCP 工具或整个 MCP 服务器：
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__memory__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'Memory operation initiated' >> ~/mcp-operations.log"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*__write.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/user/scripts/validate-mcp-write.py"
           }
         ]
       }
@@ -831,10 +1117,9 @@ Claude Code 钩子在您的[设置文件](/en/docs/claude-code/settings)中配�
   - 配置与环境（环境变量、全局配置、配置文件）
   - 命令与使用（Claude 命令、命令行参数、速查表）
   - 界面与输入（键盘快捷键、多行输入、Vim 模式、命令历史）
-  - 高级功能（思考关键词、子代理、MCP 集成、钩子系统开始部分）
+  - 高级功能（思考关键词、子代理、MCP 集成、钩子系统完整内容）
 
 - 📋 **待翻译的部分**：
-  - 钩子系统（完整内容）
   - 安全与权限
   - 自动化与集成
   - 帮助与故障排除
@@ -860,7 +1145,7 @@ Claude Code 钩子在您的[设置文件](/en/docs/claude-code/settings)中配�
 - 请以官方英文版本为准
 - 如有翻译错误或建议，欢迎提出改进意见
 
-**翻译进度：** 约 35%（811行/2292行）
+**翻译进度：** 约 48%（1103行/2292行）
 
 ---
 
