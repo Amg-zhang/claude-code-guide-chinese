@@ -1104,6 +1104,297 @@ MCP 工具遵循模式 `mcp__<server>__<tool>`，例如：
 }
 ```
 
+<h3 id="hooks-examples">示例</h3>
+
+<Tip>
+  有关实用示例，包括代码格式化、通知和文件保护，请参见入门指南中的[更多示例](/en/docs/claude-code/hooks-guide#more-examples)。
+</Tip>
+
+<h3 id="security-considerations">安全考虑</h3>
+
+#### 免责声明
+
+**使用风险自负**：Claude Code 钩子在您的系统上自动执行任意 shell 命令。通过使用钩子，您确认：
+
+* 您对配置的命令承担全部责任
+* 钩子可以修改、删除或访问您的用户账户可以访问的任何文件
+* 恶意或编写不当的钩子可能造成数据丢失或系统损坏
+* Anthropic 不提供任何保证，也不对钩子使用造成的任何损害承担责任
+* 您应该在生产使用前在安全环境中彻底测试钩子
+
+在将任何钩子命令添加到配置之前，请务必审查并理解它们。
+
+<h2 id="security-best-practices-main">安全最佳实践</h2>
+
+以下是编写更安全钩子的一些关键实践：
+
+1. **验证和清理输入** - 永远不要盲目信任输入数据
+2. **始终引用 shell 变量** - 使用 `"$VAR"` 而不是 `$VAR`
+3. **阻止路径遍历** - 检查文件路径中的 `..`
+4. **使用绝对路径** - 为脚本指定完整路径（使用 `$CLAUDE_PROJECT_DIR` 作为项目路径）
+5. **跳过敏感文件** - 避免 `.env`、`.git/`、密钥等
+
+#### 配置安全性
+
+对设置文件中钩子的直接编辑不会立即生效。Claude Code：
+
+1. 在启动时捕获钩子的快照
+2. 在整个会话中使用此快照
+3. 如果钩子被外部修改则警告
+4. 需要在 `/hooks` 菜单中审查更改才能应用
+
+这防止恶意钩子修改影响您当前的会话。
+
+<h3 id="hook-execution-details">钩子执行详情</h3>
+
+* **超时**：默认 60 秒执行限制，每个命令可配置。
+  * 单个命令的超时不会影响其他命令。
+* **并行化**：所有匹配的钩子并行运行
+* **环境**：在当前目录中运行，使用 Claude Code 的环境
+  * `CLAUDE_PROJECT_DIR` 环境变量可用，包含项目根目录的绝对路径
+* **输入**：通过 stdin 的 JSON
+* **输出**：
+  * PreToolUse/PostToolUse/Stop：进度显示在成绩单中（Ctrl-R）
+  * Notification：仅记录到调试（`--debug`）
+
+<h3 id="hooks-debugging">调试</h3>
+
+#### 基本故障排除
+
+如果您的钩子不工作：
+
+1. **检查配置** - 运行 `/hooks` 查看您的钩子是否已注册
+2. **验证语法** - 确保您的 JSON 设置有效
+3. **测试命令** - 首先手动运行钩子命令
+4. **检查权限** - 确保脚本可执行
+5. **查看日志** - 使用 `claude --debug` 查看钩子执行详情
+
+常见问题：
+
+* **引号未转义** - 在 JSON 字符串中使用 `\"`
+* **错误匹配器** - 检查工具名称完全匹配（区分大小写）
+* **命令未找到** - 为脚本使用完整路径
+
+#### 高级调试
+
+对于复杂的钩子问题：
+
+1. **检查钩子执行** - 使用 `claude --debug` 查看详细的钩子执行
+2. **验证 JSON 模式** - 使用外部工具测试钩子输入/输出
+3. **检查环境变量** - 验证 Claude Code 的环境是否正确
+4. **测试边界情况** - 尝试使用不寻常的文件路径或输入的钩子
+5. **监控系统资源** - 检查钩子执行期间的资源耗尽
+6. **使用结构化日志** - 在钩子脚本中实现日志记录
+
+#### 调试输出示例
+
+使用 `claude --debug` 查看钩子执行详情：
+
+```
+[DEBUG] Executing hooks for PostToolUse:Write
+[DEBUG] Getting matching hook commands for PostToolUse with query: Write
+[DEBUG] Found 1 hook matchers in settings
+[DEBUG] Matched 1 hooks for query "Write"
+[DEBUG] Found 1 hook commands to execute
+[DEBUG] Executing hook command: <Your command> with timeout 60000ms
+[DEBUG] Hook command completed with status 0: <Your stdout>
+```
+
+进度消息出现在成绩单模式（Ctrl-R）中，显示：
+
+* 哪个钩子正在运行
+* 执行的命令
+* 成功/失败状态
+* 输出或错误消息
+
+---
+
+<h1 id="security--permissions">安全与权限</h1>
+
+#### 工具权限模式
+
+```bash
+# 允许特定工具（读取/编辑文件）
+claude --allowedTools "Edit,Read"
+
+# 允许工具类别包括 Bash（但仍在下面的范围内）
+claude --allowedTools "Edit,Read,Bash"
+
+# 范围权限（所有 git 命令）
+claude --allowedTools "Bash(git:*)"
+
+# 多个范围（git + npm）
+claude --allowedTools "Bash(git:*),Bash(npm:*)"
+```
+
+<h3 id="dangerous-mode">危险模式</h3>
+
+> [!Warning]
+> 永远不要在生产系统、共享机器或任何有重要数据的系统中使用
+> 仅与隔离环境（如 **Docker 容器**）一起使用，使用此模式可能导致数据丢失并危害您的系统！
+> 
+> `claude --dangerously-skip-permissions`
+
+<h2 id="security-best-practices-main">安全最佳实践</h2>
+
+<h3 id="start-restrictive">从限制性开始</h3>
+
+<h3 id="protect-sensitive-data">保护敏感数据</h3>
+
+- **保持 `~/.claude.json` 私有（`chmod 600`）。**
+- **优先使用环境变量而不是明文 API 密钥。**
+- 使用 `--strict-mcp-config` 仅从指定的配置文件加载 MCP 服务器
+
+<h1 id="automation--integration">自动化与集成</h1>
+
+<h2 id="automation--scripting-with-claude-code">使用 Claude Code 进行自动化和脚本编写</h2>
+
+> 您可以复制/粘贴的 GitHub Actions :p
+
+1. **在您的组织/仓库上安装 Claude GitHub App**（Actions 对 PR/问题发表评论需要）。
+2. 在您的仓库中，添加一个秘密 **`ANTHROPIC_API_KEY`** 设置 → 秘密和变量 → Actions → 新仓库秘密
+3. 将下面的工作流程复制到 **`.github/workflows/`**。
+4. 打开一个**测试 PR**（或新问题）以查看它们运行。
+
+> [!TIP]
+> 当您长期采用它们时，将 Actions 固定到发布标签（例如 `@v1`）。下面的片段使用分支标签以提高可读性。
+
+<h2 id="auto-pr-review-inline-comments">自动 PR 审查（内联评论）</h2>
+
+> **在 PR 打开或更新时立即创建结构化审查（带有内联评论）。**
+
+**文件：** `.github/workflows/claude-pr-auto-review.yml`
+
+```yaml
+name: Auto review PRs
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  auto-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Claude PR review
+        uses: anthropics/claude-code-action@main
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Claude will fetch the diff and leave inline comments
+          direct_prompt: |
+            Review this pull request's diff for correctness, readability, testing, performance, and DX.
+            Prefer specific, actionable suggestions. Use inline comments where relevant.
+          # GitHub tools permitted during the run:
+          allowed_tools: >-
+            mcp__github__get_pull_request_diff,
+            mcp__github__create_pending_pull_request_review,
+            mcp__github__add_comment_to_pending_review,
+            mcp__github__submit_pending_pull_request_review
+```
+
+<h2 id="security-review-on-every-pr">每个 PR 的安全审查</h2>
+
+> **运行专注的安全扫描并直接在 PR 上评论发现。**
+
+**文件：** `.github/workflows/claude-security-review.yml`
+
+```yaml
+name: Security Review
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+
+      - name: Claude Code Security Review
+        uses: anthropics/claude-code-security-review@main
+        with:
+          claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          comment-pr: true
+          # Optional:
+          # exclude-directories: "docs,examples"
+          # claudecode-timeout: "20"
+          # claude-model: "claude-3-5-sonnet-20240620"
+```
+
+<h2 id="issue-triage-suggest-labels--severity">问题分类（建议标签和严重性）</h2>
+
+> **当新问题打开时，Claude 提议标签/严重性并发布整洁的分类评论。您可以通过切换单个标志启用**自动应用标签****
+
+**文件：** `.github/workflows/claude-issue-triage.yml`
+
+```yaml
+name: Claude Issue Triage
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    env:
+      CLAUDE_MODEL: claude-3-5-sonnet-20240620
+    steps:
+      - name: Collect context & similar issues
+        id: gather
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="${{ github.event.issue.title }}"
+          BODY="${{ github.event.issue.body }}"
+          # naive similar search by title words
+          Q=$(echo "$TITLE" | tr -dc '[:alnum:] ' | awk '{print $1" "$2" "$3" "$4}')
+          gh api -X GET search/issues -f q="repo:${{ github.repository }} is:issue $Q" -f per_page=5 > similars.json
+          echo "$TITLE" > title.txt
+          echo "$BODY" > body.txt
+
+      - name: Ask Claude for triage JSON
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          cat > payload.json << 'JSON'
+          {
+            "model": "${{ env.CLAUDE_MODEL }}",
+            "max_tokens": 1500,
+            "system": "You are a pragmatic triage engineer. Be specific, cautious with duplicates.",
+            "messages": [{
+              "role": "user",
+              "content": [{
+                "type":"text",
+                "text":"Given the issue and similar candidates, produce STRICT JSON with keys: labels (array of strings), severity (one of: low, medium, high, critical), duplicate_url (string or empty), comment_markdown (string brief). Do not include any extra keys."
+              },
+              {"type":"text","text":"Issue title:\n"},
+              {"type":"text","text": (include from file) },
+              {"type":"text","text":"\n\nIssue body:\n"},
+              {"type":"text","text": (include from file) },
+              {"type":"text","text":"\n\nSimilar issues (JSON):\n"},
+              {"type":"text","text": (include from file) }]
+            }]
+          }
+          JSON
+          # Inject files safely
+
 ---
 
 ## 🎯 翻译说明
@@ -1118,10 +1409,10 @@ MCP 工具遵循模式 `mcp__<server>__<tool>`，例如：
   - 命令与使用（Claude 命令、命令行参数、速查表）
   - 界面与输入（键盘快捷键、多行输入、Vim 模式、命令历史）
   - 高级功能（思考关键词、子代理、MCP 集成、钩子系统完整内容）
+  - 安全与权限（工具权限、危险模式、安全最佳实践）
+  - 自动化与集成（GitHub Actions、PR 审查、安全审查、问题分类）
 
 - 📋 **待翻译的部分**：
-  - 安全与权限
-  - 自动化与集成
   - 帮助与故障排除
   - 最佳实践
   - 常见陷阱避免
@@ -1145,7 +1436,7 @@ MCP 工具遵循模式 `mcp__<server>__<tool>`，例如：
 - 请以官方英文版本为准
 - 如有翻译错误或建议，欢迎提出改进意见
 
-**翻译进度：** 约 48%（1103行/2292行）
+**翻译进度：** 约 61%（1396行/2292行）
 
 ---
 
